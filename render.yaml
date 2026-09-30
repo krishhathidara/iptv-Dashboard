@@ -1,0 +1,18 @@
+# Create a separate Blueprint in Render for this repository. Never commit secrets.
+services:
+  - type: web
+    name: nexastream-operator-dashboard
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: TV_API_URL
+        value: https://nexastream-tv.onrender.com
+      - key: TV_ADMIN_API_KEY
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false
+      - key: DASHBOARD_SESSION_SECRET
+        generateValue: true
