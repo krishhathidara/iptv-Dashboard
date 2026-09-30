@@ -10,6 +10,7 @@ PASSWORD = "correct-operator-password-at-least-32-chars"
 KEY = "tv-admin-key-at-least-32-characters-long"
 SECRET = "different-session-secret-at-least-32-chars"
 BASE = "https://dashboard.example"
+ORIGINAL_ASYNC_CLIENT = httpx.AsyncClient
 
 
 @pytest.fixture
@@ -103,3 +104,23 @@ def test_missing_secrets_fail_closed(monkeypatch):
     monkeypatch.setattr(main, "PUBLIC_URL", BASE)
     with pytest.raises(RuntimeError, match="TV_ADMIN_API_KEY"):
         main.validate_settings()
+
+
+@pytest.mark.parametrize(("upstream", "message", "status"), [
+    (lambda _: httpx.Response(401), "Match dashboard TV_ADMIN_API_KEY", 502),
+    (lambda _: httpx.Response(503), "PostgreSQL database status", 502),
+    (lambda _: httpx.Response(302, headers={"Location": "https://other.example"}), "Check TV_API_URL", 502),
+    (lambda request: (_ for _ in ()).throw(httpx.ConnectError("failed", request=request)), "Cannot reach TV service", 502),
+    (lambda request: (_ for _ in ()).throw(httpx.ReadTimeout("slow", request=request)), "TV service timed out", 504),
+])
+def test_tv_failures_explain_what_to_check(dashboard, monkeypatch, upstream, message, status):
+    client, _ = dashboard
+    headers = sign_in(client)
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: ORIGINAL_ASYNC_CLIENT(
+        transport=httpx.MockTransport(upstream), **kwargs))
+    result = client.get("/api/customers")
+    assert result.status_code == status
+    assert message in result.json()["detail"]
+    assert KEY not in result.text
+    # The TV failing must not invalidate the operator's dashboard session.
+    assert client.get("/api/session").json()["csrf_token"] == headers["X-CSRF-Token"]

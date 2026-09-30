@@ -85,11 +85,26 @@
     $("subscriberAction").scrollIntoView({ block: "nearest" });
   }
   async function load() {
-    customers = await request("/admin/subscribers");
+    try {
+      customers = await request("/admin/subscribers");
+    } catch (error) {
+      $("customerLoadStatus").textContent = `${error.message} Use Refresh once the TV service is working.`;
+      $("customerLoadStatus").hidden = false;
+      throw error;
+    }
+    $("customerLoadStatus").hidden = true;
+    $("customerLoadStatus").textContent = "";
     $("customerCount").textContent = String(customers.length);
     $("activeCount").textContent = String(customers.filter((row) => row.is_active && Date.parse(row.expires_at) > Date.now()).length);
     $("todayDate").textContent = new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date());
     renderCustomers();
+  }
+  async function unlockContent() {
+    $("adminContent").hidden = false;
+    const target = document.getElementById(location.hash.slice(1));
+    if (target && !target.closest("[hidden]")) target.scrollIntoView({ block: "start" });
+    try { await load(); status("Dashboard unlocked"); }
+    catch (error) { status(csrf ? `${error.message} You are signed in; use Refresh to try loading customers again.` : error.message, true); }
   }
   function renderCustomers() {
     const search = $("subscriberSearch").value.trim().toLowerCase();
@@ -102,13 +117,32 @@
   $("unlockButton").addEventListener("click", async () => {
     const password = $("adminKey").value;
     $("adminKey").value = "";
+    $("unlockButton").disabled = true;
     try {
       const response = await fetch("/api/login", { method: "POST", cache: "no-store", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }) });
       if (!response.ok) { const problem = await response.json(); throw new Error(problem.detail || `HTTP ${response.status}`); }
       csrf = (await response.json()).csrf_token;
-      await load(); $("adminContent").hidden = false; status("Dashboard unlocked"); $("subscriberName").focus();
+      await unlockContent();
+      if (!location.hash || location.hash === "#overview" || location.hash === "#newCustomer") $("subscriberName").focus();
     } catch (error) { csrf = ""; $("adminContent").hidden = true; status(error.message, true); }
+    finally { $("unlockButton").disabled = false; }
   });
+  document.querySelectorAll('.admin-sidebar a[href^="#"]').forEach((link) => link.addEventListener("click", (event) => {
+    const section = document.getElementById(link.hash.slice(1));
+    if (section?.closest("#adminContent") && $("adminContent").hidden) {
+      event.preventDefault();
+      status("Sign in to open New Customer and My Customers.");
+      $("adminKey").focus();
+      return;
+    }
+    if (section) {
+      event.preventDefault();
+      history.replaceState(null, "", link.hash);
+      section.scrollIntoView({ block: "start" });
+      section.querySelector("h2, h1")?.setAttribute("tabindex", "-1");
+      section.querySelector("h2, h1")?.focus({ preventScroll: true });
+    }
+  }));
   $("lockButton").addEventListener("click", async () => {
     if (csrf) await fetch("/api/logout", { method: "POST", credentials: "same-origin", headers: { "X-CSRF-Token": csrf } }).catch(() => {});
     csrf = ""; customers = []; closeAction(false); $("adminContent").hidden = true; $("subscriberList").replaceChildren(); $("newLink").replaceChildren(); $("newLink").hidden = true; status("Signed out"); $("adminKey").focus();
@@ -222,8 +256,7 @@
     .then(async (result) => {
       if (!result) return;
       csrf = result.csrf_token;
-      try { await load(); $("adminContent").hidden = false; status("Dashboard unlocked"); }
-      catch (error) { csrf = ""; status(error.message, true); }
+      await unlockContent();
     })
     .catch(() => {});
 })();

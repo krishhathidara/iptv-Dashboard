@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import logging
 import os
 import re
 import secrets
@@ -17,6 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 STATIC = Path(__file__).parent / "static"
+logger = logging.getLogger(__name__)
 TV_URL = os.getenv("TV_API_URL", "https://nexastream-tv.onrender.com").rstrip("/")
 PUBLIC_URL = os.getenv("DASHBOARD_PUBLIC_URL", os.getenv("RENDER_EXTERNAL_URL", "")).rstrip("/")
 TV_KEY = os.getenv("TV_ADMIN_API_KEY", "")
@@ -138,16 +140,23 @@ async def logout(request: Request) -> JSONResponse:
 async def tv_request(method: str, path: str, body: dict | None = None):
     # No user-controlled host/path. The TV key never goes to browser JavaScript.
     try:
-        async with httpx.AsyncClient(timeout=25, follow_redirects=False) as client:
+        # A sleeping free TV instance can take longer than the usual HTTPX default
+        # to wake. Never automatically replay writes: a POST may have succeeded.
+        async with httpx.AsyncClient(timeout=httpx.Timeout(75, connect=10), follow_redirects=False) as client:
             response = await client.request(method, f"{TV_URL}{path}", headers={"X-Admin-Key": TV_KEY}, json=body)
-    except httpx.RequestError:
-        raise HTTPException(502, "TV service unavailable; retry shortly") from None
+    except httpx.TimeoutException:
+        logger.warning("TV API timed out on %s %s", method, path)
+        raise HTTPException(504, "TV service timed out. Check the TV service in Render, then retry. If this was a customer change, refresh the list before trying again.") from None
+    except httpx.RequestError as exc:
+        logger.warning("TV API connection failed on %s %s (%s)", method, path, type(exc).__name__)
+        raise HTTPException(502, "Cannot reach TV service. Check TV_API_URL and the TV service status in Render.") from None
     if response.status_code in (301, 302, 303, 307, 308):
-        raise HTTPException(502, "Unexpected TV service redirect")
+        raise HTTPException(502, "TV service redirected the request. Check TV_API_URL (use the TV service's HTTPS origin).")
     if response.status_code == 401:
-        raise HTTPException(502, "TV service rejected its configured administrator key")
+        raise HTTPException(502, "TV service rejected the admin key. Match dashboard TV_ADMIN_API_KEY to TV service ADMIN_API_KEY in Render; do not enter either key in the sign-in form.")
     if response.status_code >= 500:
-        raise HTTPException(502, "TV service unavailable; retry shortly")
+        logger.warning("TV API returned HTTP %s on %s %s", response.status_code, method, path)
+        raise HTTPException(502, "TV service returned a server error. Check its Render logs and PostgreSQL database status; then retry.")
     try:
         result = response.json()
     except ValueError:

@@ -45,5 +45,6 @@
 .admin-action h3 { margin: 0 0 8px; font-size: 22px; }
 .admin-action .field-label { max-width: 350px; margin: 14px 0; }
 #adminStatus.is-error { color: var(--danger); }
+#customerLoadStatus.is-error { color: var(--danger); }
 @media (max-width: 1000px) { .admin-sidebar { position: static; width: 100%; flex-direction: row; align-items: center; flex-wrap: wrap; gap: 4px; padding: 12px; } .admin-sidebar a { padding: 12px; } .admin-sidebar .admin-brand { margin: 0 auto 0 0; font-size: 19px; } .admin-sidebar .admin-nav-bottom { margin: 0; } .admin-shell { margin-left: 0; } .admin-stats { gap: 10px; } .admin-stat { padding: 12px; } }
 @media (max-width: 650px) { .admin-fields, .admin-stats { grid-template-columns: 1fr; } .admin-shell { padding: 22px 16px 70px; } .subscriber-actions { width: 100%; } .subscriber-actions button { flex: 1 1 130px; } }
