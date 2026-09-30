@@ -1,5 +1,7 @@
 """Exercise the real session, CSRF and TV-key proxy using an in-memory TV service."""
 
+import json
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -15,6 +17,7 @@ ORIGINAL_ASYNC_CLIENT = httpx.AsyncClient
 
 @pytest.fixture
 def dashboard(monkeypatch):
+    monkeypatch.setattr(main, "LOCAL_PASSWORDLESS", False)
     monkeypatch.setattr(main, "TV_KEY", KEY)
     monkeypatch.setattr(main, "PASSWORD", PASSWORD)
     monkeypatch.setattr(main, "SECRET", SECRET)
@@ -124,3 +127,86 @@ def test_tv_failures_explain_what_to_check(dashboard, monkeypatch, upstream, mes
     assert KEY not in result.text
     # The TV failing must not invalidate the operator's dashboard session.
     assert client.get("/api/session").json()["csrf_token"] == headers["X-CSRF-Token"]
+
+
+def test_create_rejected_key_does_not_claim_account_created(dashboard, monkeypatch):
+    client, _ = dashboard
+    headers = sign_in(client)
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: ORIGINAL_ASYNC_CLIENT(
+        transport=httpx.MockTransport(lambda _: httpx.Response(401)), **kwargs))
+    result = client.post("/api/customers", json={
+        "name": "Krish", "mac_address": "00:1A:79:67:CB:47", "months": 1, "is_active": True,
+    }, headers=headers)
+    assert result.status_code == 502
+    assert "TV service rejected the admin key" in result.json()["detail"]
+    assert client.get("/api/session").status_code == 200
+
+
+def test_created_customer_fields_and_urls_are_forwarded(dashboard):
+    client, calls = dashboard
+    headers = sign_in(client)
+    payload = {"name": "Krish", "mac_address": "00:1A:79:67:CB:47", "months": 1,
+               "notes": None, "is_active": True}
+    result = client.post("/api/customers", json=payload, headers=headers)
+    assert result.status_code == 201
+    assert result.json()["mag_portal_url"].endswith("/c/index.html")
+    assert calls[-1].method == "POST" and calls[-1].url.path == "/admin/subscribers"
+    assert json.loads(calls[-1].content) == payload
+
+
+def test_passwordless_local_only_still_requires_tv_key_and_csrf(monkeypatch):
+    monkeypatch.setattr(main, "LOCAL_PASSWORDLESS", True)
+    monkeypatch.setattr(main, "TV_KEY", KEY)
+    monkeypatch.setattr(main, "PASSWORD", "")
+    monkeypatch.setattr(main, "SECRET", SECRET)
+    monkeypatch.setattr(main, "PUBLIC_URL", "http://127.0.0.1:8000")
+    monkeypatch.setattr(main, "TV_URL", "https://nexastream-tv.onrender.com")
+    monkeypatch.delenv("RENDER_SERVICE_ID", raising=False)
+    main.validate_settings()
+    seen = []
+
+    def upstream(request):
+        seen.append(request)
+        assert request.headers["X-Admin-Key"] == KEY
+        return httpx.Response(201, json={"id": 2, "mag_portal_url": "https://nexastream-tv.onrender.com/stalker/private/c/index.html"})
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: ORIGINAL_ASYNC_CLIENT(
+        transport=httpx.MockTransport(upstream), **kwargs))
+    with TestClient(main.app, base_url="http://127.0.0.1:8000", client=("127.0.0.1", 50000)) as client:
+        first = client.get("/api/session")
+        assert first.status_code == 200 and first.json()["passwordless"] is True
+        assert client.post("/api/login", json={"password": ""}, headers={"Origin": "http://127.0.0.1:8000"}).status_code == 403
+        assert "HttpOnly" in first.headers["set-cookie"] and "Secure" not in first.headers["set-cookie"]
+        assert client.get("/api/session").json()["csrf_token"] == first.json()["csrf_token"]
+        assert client.post("/api/customers", json={}).status_code == 403
+        assert client.post("/api/customers", json={}, headers={"Origin": "https://evil.example", "X-CSRF-Token": first.json()["csrf_token"]}).status_code == 403
+        response = client.post("/api/customers", json={"name": "Krish", "mac_address": "00:1A:79:67:CB:47", "months": 1},
+                               headers={"Origin": "http://127.0.0.1:8000", "X-CSRF-Token": first.json()["csrf_token"]})
+        assert response.status_code == 201 and len(seen) == 1
+        assert client.get("/static/js/admin.js").status_code == 200
+
+
+def test_passwordless_cannot_start_on_public_render(monkeypatch):
+    monkeypatch.setattr(main, "LOCAL_PASSWORDLESS", True)
+    monkeypatch.setattr(main, "PASSWORD", "")
+    monkeypatch.setattr(main, "TV_KEY", KEY)
+    monkeypatch.setattr(main, "SECRET", SECRET)
+    monkeypatch.setattr(main, "PUBLIC_URL", BASE)
+    with pytest.raises(RuntimeError, match="only on loopback"):
+        main.validate_settings()
+    monkeypatch.setattr(main, "PUBLIC_URL", "http://127.0.0.1:8000")
+    monkeypatch.setenv("RENDER_SERVICE_ID", "srv-example")
+    with pytest.raises(RuntimeError, match="never on Render"):
+        main.validate_settings()
+
+
+def test_passwordless_local_does_not_authorize_nonlocal_clients(monkeypatch):
+    monkeypatch.setattr(main, "LOCAL_PASSWORDLESS", True)
+    monkeypatch.setattr(main, "TV_KEY", KEY)
+    monkeypatch.setattr(main, "PASSWORD", "")
+    monkeypatch.setattr(main, "SECRET", SECRET)
+    monkeypatch.setattr(main, "PUBLIC_URL", "http://127.0.0.1:8000")
+    monkeypatch.delenv("RENDER_SERVICE_ID", raising=False)
+    with TestClient(main.app, base_url="http://127.0.0.1:8000", client=("203.0.113.10", 50000)) as client:
+        assert client.get("/api/session").status_code == 401
+        assert client.post("/api/customers", json={}).status_code == 401

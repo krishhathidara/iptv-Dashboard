@@ -31,6 +31,9 @@
 .admin-shell :is(button, a, input, select):focus-visible, .admin-sidebar a:focus-visible { outline: 4px solid #30c995; outline-offset: 4px; box-shadow: 0 0 0 8px rgba(48, 201, 149, .17); }
 .admin-shell .primary-button { background: linear-gradient(100deg, #22b884, #0a9b76); border-color: #22b884; }
 #adminStatus { min-height: 27px; color: #d3caff; }
+.create-status { margin: 18px 0 0; padding: 14px 18px; border: 1px solid #195345; border-radius: 12px; background: #102138; color: #b9f4d9 !important; overflow-wrap: anywhere; }
+.create-status.is-error { border-color: var(--danger); color: var(--danger) !important; }
+.admin-shell button:disabled { opacity: .7; cursor: wait; }
 .admin-link { margin: 16px 0; padding: 16px; border: 1px solid var(--accent); border-radius: 10px; background: var(--panel-2); overflow-wrap: anywhere; }
 .admin-link strong { display: block; margin-bottom: 8px; }
 .admin-link a { display: block; color: #d3caff; text-decoration: underline; line-height: 1.6; }

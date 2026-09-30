@@ -19,8 +19,8 @@
   </nav>
   <main class="admin-shell">
     <header class="admin-header" id="overview"><div><span class="section-kicker">NexaStream · operator console</span><h1>Dashboard</h1><p>Manage customer activation, MAG portals and TV playlist links.</p></div></header>
-    <section class="admin-warning">Record the MAG device’s MAC, create the account inactive, then Activate. <strong>Enter the unique MAG external portal URL shown after creation on that customer’s MAG box—not the TV homepage or the dashboard URL.</strong> Save the URL: it cannot be retrieved after you close this page; use Replace URLs to issue a new one. A MAC can be spoofed, and suspending an account cannot revoke already copied upstream video links. Streams must be licensed for distribution.</section>
-    <section class="admin-card">
+    <section class="admin-warning">Record the MAG device’s MAC and select a duration. Accounts are activated immediately by default; uncheck Activate immediately to create an inactive account instead. <strong>Enter the unique MAG external portal URL shown after creation on that customer’s MAG box—not the TV homepage or the dashboard URL.</strong> Save the URL: it cannot be retrieved after you close this page; use Replace URLs to issue a new one. A MAC can be spoofed, and suspending an account cannot revoke already copied upstream video links. Streams must be licensed for distribution.</section>
+    <section class="admin-card" id="signInCard">
       <h2>Unlock administration</h2>
       <p>Enter your dashboard operator password. The TV service admin key is held by the dashboard server; never enter that key here. Sign out when finished.</p>
       <div class="admin-row"><label class="field-label">Operator password<input id="adminKey" type="password" autocomplete="current-password" aria-label="Operator password"></label><button id="unlockButton" class="primary-button" type="button">Sign in</button><button id="lockButton" class="secondary-button" type="button">Sign out</button></div>
@@ -37,13 +37,14 @@
         <form id="subscriberForm">
           <div class="admin-fields">
             <label class="field-label">Name<input id="subscriberName" required maxlength="255" autocomplete="off"></label>
-            <label class="field-label">Device MAC (required for MAG portal)<input id="subscriberMac" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off"></label>
+            <label class="field-label">Device MAC (required for MAG portal)<input id="subscriberMac" required maxlength="17" pattern="([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}" title="Enter six hexadecimal pairs separated by colons or dashes, e.g. AA:BB:CC:DD:EE:FF" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off"></label>
             <label class="field-label">Duration (calendar months)<select id="subscriberMonths"><option value="1">1 month</option><option value="3">3 months</option><option value="6">6 months</option><option value="12">12 months</option><option value="custom">Other duration</option></select></label>
             <label class="field-label" id="subscriberCustomLabel" hidden>Custom duration (1–120 months)<input id="subscriberCustomMonths" type="number" min="1" max="120" value="1" required disabled></label>
             <label class="field-label">Notes (optional)<input id="subscriberNotes" maxlength="500" autocomplete="off"></label>
           </div>
-          <label class="admin-check"><input id="subscriberActive" type="checkbox"><span>Activate immediately (otherwise select Activate after creating the account)</span></label>
-          <button class="primary-button" type="submit">Create customer and URLs</button>
+          <label class="admin-check"><input id="subscriberActive" type="checkbox" checked><span>Activate immediately (otherwise select Activate after creating the account)</span></label>
+          <button id="createCustomerButton" class="primary-button" type="submit">Create customer and URLs</button>
+          <p id="createStatus" class="create-status" role="status" aria-live="polite">Enter name, device MAC and duration, then select Create customer and URLs.</p>
         </form>
         <div id="newLink" class="admin-link" role="status" hidden></div>
       </section>

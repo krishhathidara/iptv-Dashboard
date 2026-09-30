@@ -9,6 +9,10 @@
     $("adminStatus").textContent = message;
     $("adminStatus").classList.toggle("is-error", error);
   };
+  const createStatus = (message, error = false) => {
+    $("createStatus").textContent = message;
+    $("createStatus").classList.toggle("is-error", error);
+  };
   const escapeHtml = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   async function request(path, options = {}) {
     const response = await fetch(path.replace(/^\/admin\/subscribers/, "/api/customers"), {
@@ -19,16 +23,20 @@
     });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
-      if (response.status === 401) { csrf = ""; $("adminContent").hidden = true; }
+      if (response.status === 401) {
+        csrf = "";
+        $("adminContent").hidden = true;
+        status("Session expired. Refresh to reconnect locally, or sign in again.", true);
+      }
       throw new Error(typeof error.detail === "string" ? error.detail : `HTTP ${response.status}`);
     }
     return response.json();
   }
-  function showLink(playlistUrl, portalUrl, magPortalUrl) {
+  function showLink(playlistUrl, portalUrl, magPortalUrl, message = "URLs replaced.") {
     const container = $("newLink");
     container.replaceChildren();
     const title = document.createElement("strong");
-    title.textContent = "Save all customer URLs now: they cannot be retrieved after this page is closed. Replacing them disables the old URLs.";
+    title.textContent = `${message} Save all customer URLs now: they cannot be retrieved after this page is closed. Replacing them disables the old URLs.`;
     container.append(title);
     for (const [label, copyLabel, url] of [["MAG external portal URL (set on the MAG box; requires the recorded MAC)", "MAG portal", magPortalUrl], ["TV browser URL (not a MAG portal)", "TV browser", portalUrl], ["M3U playlist URL (for M3U players)", "M3U", playlistUrl]]) {
       const heading = document.createElement("p");
@@ -103,8 +111,16 @@
     $("adminContent").hidden = false;
     const target = document.getElementById(location.hash.slice(1));
     if (target && !target.closest("[hidden]")) target.scrollIntoView({ block: "start" });
-    try { await load(); status("Dashboard unlocked"); }
-    catch (error) { status(csrf ? `${error.message} You are signed in; use Refresh to try loading customers again.` : error.message, true); }
+    status("Signed in. Loading customers…");
+    try {
+      await load();
+      createStatus("Enter name, device MAC and duration, then select Create customer and URLs.");
+      status("Signed in. Dashboard ready.");
+    }
+    catch (error) {
+      status(csrf ? "Dashboard open, but the TV customer service is unavailable. See My Customers for details." : "Session expired. Refresh to reconnect locally or sign in again.", true);
+      if (csrf) createStatus(`${error.message} Customer creation will not work until the TV service connection is fixed.`, true);
+    }
   }
   function renderCustomers() {
     const search = $("subscriberSearch").value.trim().toLowerCase();
@@ -118,14 +134,16 @@
     const password = $("adminKey").value;
     $("adminKey").value = "";
     $("unlockButton").disabled = true;
+    $("unlockButton").textContent = "Signing in…";
+    status("Checking operator password…");
     try {
       const response = await fetch("/api/login", { method: "POST", cache: "no-store", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }) });
-      if (!response.ok) { const problem = await response.json(); throw new Error(problem.detail || `HTTP ${response.status}`); }
+      if (!response.ok) { const problem = await response.json().catch(() => ({})); throw new Error(problem.detail || `Sign in failed (HTTP ${response.status})`); }
       csrf = (await response.json()).csrf_token;
       await unlockContent();
       if (!location.hash || location.hash === "#overview" || location.hash === "#newCustomer") $("subscriberName").focus();
-    } catch (error) { csrf = ""; $("adminContent").hidden = true; status(error.message, true); }
-    finally { $("unlockButton").disabled = false; }
+    } catch (error) { csrf = ""; $("adminContent").hidden = true; status(`Sign in failed: ${error.message}`, true); }
+    finally { $("unlockButton").disabled = false; $("unlockButton").textContent = "Sign in"; }
   });
   document.querySelectorAll('.admin-sidebar a[href^="#"]').forEach((link) => link.addEventListener("click", (event) => {
     const section = document.getElementById(link.hash.slice(1));
@@ -145,7 +163,7 @@
   }));
   $("lockButton").addEventListener("click", async () => {
     if (csrf) await fetch("/api/logout", { method: "POST", credentials: "same-origin", headers: { "X-CSRF-Token": csrf } }).catch(() => {});
-    csrf = ""; customers = []; closeAction(false); $("adminContent").hidden = true; $("subscriberList").replaceChildren(); $("newLink").replaceChildren(); $("newLink").hidden = true; status("Signed out"); $("adminKey").focus();
+    csrf = ""; customers = []; closeAction(false); $("adminContent").hidden = true; $("subscriberList").replaceChildren(); $("newLink").replaceChildren(); $("newLink").hidden = true; createStatus("Enter name, device MAC and duration, then select Create customer and URLs."); status("Signed out"); $("adminKey").focus();
   });
   $("adminKey").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); $("unlockButton").click(); } });
   $("subscriberMonths").addEventListener("change", () => {
@@ -156,19 +174,38 @@
   });
   $("subscriberForm").addEventListener("submit", async (event) => {
     event.preventDefault();
+    const button = $("createCustomerButton");
+    if (button.disabled) return;
+    const name = $("subscriberName").value.trim();
+    const mac = $("subscriberMac").value.trim();
+    if (!name || !/^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i.test(mac)) {
+      createStatus("Enter a name and a device MAC with six hex pairs (AA:BB:CC:DD:EE:FF).", true);
+      return;
+    }
+    const months = Number($("subscriberMonths").value === "custom" ? $("subscriberCustomMonths").value : $("subscriberMonths").value);
+    if (!Number.isInteger(months) || months < 1 || months > 120) { createStatus("Enter 1 to 120 months.", true); return; }
+    button.disabled = true;
+    button.textContent = "Creating customer…";
+    createStatus(`Saving ${name} to the TV service… Do not submit again while waiting.`);
     try {
       const result = await request("/admin/subscribers", { method: "POST", body: JSON.stringify({
-        name: $("subscriberName").value, mac_address: $("subscriberMac").value || null,
-        months: Number($("subscriberMonths").value === "custom" ? $("subscriberCustomMonths").value : $("subscriberMonths").value), notes: $("subscriberNotes").value || null,
+        name, mac_address: mac,
+        months, notes: $("subscriberNotes").value || null,
         is_active: $("subscriberActive").checked,
       }) });
+      if (!result.mag_portal_url || !result.portal_url || !result.playlist_url) throw new Error("TV service did not return customer URLs. Check My Customers before retrying; the account may have been created.");
       $("subscriberForm").reset();
       $("subscriberCustomLabel").hidden = true;
       $("subscriberCustomMonths").disabled = true;
-      showLink(result.playlist_url, result.portal_url, result.mag_portal_url);
-      status(result.is_active ? "Customer activated. Share the URLs privately." : "Customer created inactive. Select Activate before sharing the URLs.");
-      await load();
-    } catch (error) { status(error.message, true); }
+      $("subscriberActive").checked = true;
+      const confirmation = `Account created for ${result.name || name} (MAC ${result.mac_address || mac}, ${months} ${months === 1 ? "month" : "months"}). ${result.is_active ? "Active now: set the MAG external portal URL below on the matching device." : "Inactive: select Activate in My Customers before the portal will work."}`;
+      createStatus(`${confirmation} Save the URLs below now.`, false);
+      showLink(result.playlist_url, result.portal_url, result.mag_portal_url, confirmation);
+      try { await load(); }
+      catch (error) { createStatus(`Account created for ${result.name || name}. Save the URLs below now. Customer list could not refresh: ${error.message}`, true); }
+    } catch (error) {
+      createStatus(`Customer was not confirmed: ${error.message} ${/timed out|did not return customer URLs/i.test(error.message) ? "Check My Customers before retrying; the request may have succeeded." : ""}`, true);
+    } finally { button.disabled = false; button.textContent = "Create customer and URLs"; }
   });
   $("refreshSubscribers").addEventListener("click", () => { closeAction(false); load().catch((error) => status(error.message, true)); });
   $("subscriberSearch").addEventListener("input", () => { closeAction(false); renderCustomers(); });
@@ -256,6 +293,7 @@
     .then(async (result) => {
       if (!result) return;
       csrf = result.csrf_token;
+      if (result.passwordless) $("signInCard").hidden = true;
       await unlockContent();
     })
     .catch(() => {});

@@ -9,9 +9,15 @@ services:
       - key: PORT
         value: "8000"
       - key: TV_API_URL
-        value: https://nexastream-tv.onrender.com
+        fromService:
+          name: nexastream-tv
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
       - key: TV_ADMIN_API_KEY
-        sync: false
+        fromService:
+          name: nexastream-tv
+          type: web
+          envVarKey: ADMIN_API_KEY
       - key: DASHBOARD_PASSWORD
         sync: false
       - key: DASHBOARD_SESSION_SECRET

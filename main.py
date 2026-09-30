@@ -24,19 +24,25 @@ PUBLIC_URL = os.getenv("DASHBOARD_PUBLIC_URL", os.getenv("RENDER_EXTERNAL_URL", 
 TV_KEY = os.getenv("TV_ADMIN_API_KEY", "")
 PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 SECRET = os.getenv("DASHBOARD_SESSION_SECRET", "")
+LOCAL_PASSWORDLESS = os.getenv("DASHBOARD_PASSWORDLESS_LOCAL", "").lower() == "true"
 COOKIE = "nexastream_operator"
 SESSION_SECONDS = 8 * 60 * 60
 failures: dict[str, list[float]] = defaultdict(list)
 
 
 def validate_settings() -> None:
-    if (len(TV_KEY) < 32 or len(PASSWORD) < 32 or len(SECRET) < 32
-            or len({TV_KEY, PASSWORD, SECRET}) != 3):
+    if (len(TV_KEY) < 32 or len(SECRET) < 32 or TV_KEY == SECRET
+            or (not LOCAL_PASSWORDLESS and (len(PASSWORD) < 32 or PASSWORD in {TV_KEY, SECRET}))):
         raise RuntimeError("Configure distinct 32+ character TV_ADMIN_API_KEY, DASHBOARD_PASSWORD, DASHBOARD_SESSION_SECRET")
     for name, value in (("TV_API_URL", TV_URL), ("DASHBOARD_PUBLIC_URL", PUBLIC_URL)):
         parsed = urlsplit(value)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
-            raise RuntimeError(f"{name} must be an HTTPS origin with no path or credentials")
+        local_origin = (name == "DASHBOARD_PUBLIC_URL" and LOCAL_PASSWORDLESS
+                        and parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"})
+        if (not local_origin and parsed.scheme != "https") or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+            raise RuntimeError(f"{name} must be an HTTPS origin with no path or credentials (HTTP loopback allowed for local testing only)")
+    if LOCAL_PASSWORDLESS and (urlsplit(PUBLIC_URL).hostname not in {"localhost", "127.0.0.1", "::1"}
+                               or os.getenv("RENDER_SERVICE_ID")):
+        raise RuntimeError("Passwordless testing is allowed only on loopback, never on Render")
 
 
 @asynccontextmanager
@@ -62,6 +68,23 @@ async def security_headers(request: Request, call_next):
 
 def session_signature(payload: str) -> str:
     return hmac.new(SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+
+def local_request(request: Request) -> bool:
+    return (LOCAL_PASSWORDLESS and request.client is not None
+            and not os.getenv("RENDER_SERVICE_ID")
+            and request.client.host in {"127.0.0.1", "::1"}
+            and request.url.hostname in {"localhost", "127.0.0.1", "::1"})
+
+
+def issue_session(passwordless: bool = False) -> JSONResponse:
+    expiry = str(int(time.time()) + SESSION_SECONDS)
+    csrf = secrets.token_hex(16)
+    payload = f"{expiry}.{csrf}"
+    response = JSONResponse({"csrf_token": csrf, "passwordless": passwordless})
+    response.set_cookie(COOKIE, f"{payload}.{session_signature(payload)}", secure=not passwordless, httponly=True,
+                        samesite="strict", max_age=SESSION_SECONDS, path="/")
+    return response
 
 
 def session(request: Request) -> str:
@@ -104,6 +127,8 @@ async def health() -> dict:
 
 @app.post("/api/login")
 async def login(request: Request) -> JSONResponse:
+    if LOCAL_PASSWORDLESS:
+        raise HTTPException(403, "Local testing uses the automatic loopback session")
     same_origin(request)
     data = await json_body(request)
     ip = request.client.host if request.client else "unknown"
@@ -115,18 +140,17 @@ async def login(request: Request) -> JSONResponse:
         failures[ip].append(now)
         raise HTTPException(401, "Incorrect operator password")
     failures.pop(ip, None)
-    expiry = str(int(time.time()) + SESSION_SECONDS)
-    csrf = secrets.token_hex(16)
-    payload = f"{expiry}.{csrf}"
-    response = JSONResponse({"csrf_token": csrf})
-    response.set_cookie(COOKIE, f"{payload}.{session_signature(payload)}", secure=True, httponly=True,
-                        samesite="strict", max_age=SESSION_SECONDS, path="/")
-    return response
+    return issue_session()
 
 
 @app.get("/api/session")
-async def session_status(request: Request) -> dict:
-    return {"csrf_token": session(request)}
+async def session_status(request: Request) -> JSONResponse:
+    if local_request(request):
+        try:
+            return JSONResponse({"csrf_token": session(request), "passwordless": True})
+        except HTTPException:
+            return issue_session(passwordless=True)
+    return JSONResponse({"csrf_token": session(request), "passwordless": False})
 
 
 @app.post("/api/logout")
