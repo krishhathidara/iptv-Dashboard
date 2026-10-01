@@ -33,8 +33,16 @@ def dashboard(monkeypatch):
         assert "cookie" not in request.headers
         if request.url.path == "/admin/subscribers" and request.method == "GET":
             return httpx.Response(200, json=[{"id": 1, "name": "A", "is_active": False}])
+        if request.url.path == "/admin/subscribers/portal-settings" and request.method == "GET":
+            return httpx.Response(200, json={"enabled": True, "server_url": "https://nexastream-tv.onrender.com",
+                                              "mag_portal_url": "https://nexastream-tv.onrender.com/c/index.html"})
         if request.url.path == "/admin/subscribers" and request.method == "POST":
             return httpx.Response(201, json={"id": 1, "mag_portal_url": "https://nexastream-tv.onrender.com/stalker/secret/c/index.html"})
+        if request.url.path == "/admin/subscribers/portal-check" and request.method == "POST":
+            assert json.loads(request.content) == {"token": "a" * 43, "mac_address": "00:1A:79:67:CB:47"}
+            return httpx.Response(200, json={"id": 1, "name": "A", "mac_matches": True,
+                                             "is_active": True, "expires_at": "2099-01-01T00:00:00Z",
+                                             "portal_origin": "https://nexastream-tv.onrender.com"})
         if request.url.path == "/admin/subscribers/1" and request.method == "PATCH":
             return httpx.Response(200, json={"id": 1, "is_active": True})
         if request.url.path == "/admin/subscribers/1/rotate" and request.method == "POST":
@@ -58,10 +66,74 @@ def sign_in(client):
     return {"Origin": BASE, "X-CSRF-Token": result.json()["csrf_token"]}
 
 
+@pytest.mark.parametrize("upstream", [httpx.Response(404), httpx.Response(404, json={"detail": "Not Found"})])
+def test_missing_tv_shared_endpoint_reports_deployment_instead_of_advertising_link(dashboard, monkeypatch, upstream):
+    client, calls = dashboard
+
+    def transport(request):
+        assert request.url.path == "/admin/subscribers/portal-settings"
+        return upstream
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: ORIGINAL_ASYNC_CLIENT(
+        transport=httpx.MockTransport(transport), **kwargs))
+    headers = sign_in(client)
+    result = client.get("/api/customers/portal-settings", headers=headers)
+    assert result.status_code == 502
+    assert "Deploy the updated TV service" in result.json()["detail"]
+    assert "server_url" not in result.text
+
+
+def test_read_only_portal_check_is_authenticated_origin_bound_and_never_forwards_full_url(dashboard):
+    client, calls = dashboard
+    token = "a" * 43
+    payload = {"portal_url": f"https://nexastream-tv.onrender.com/stalker/{token}/c/index.html",
+               "mac_address": "00:1A:79:67:CB:47"}
+    assert client.post("/api/customers/portal-check", json=payload).status_code == 401
+    headers = sign_in(client)
+    assert client.post("/api/customers/portal-check", json=payload).status_code == 403
+    assert client.post("/api/customers/portal-check", json=payload,
+                       headers={**headers, "Origin": "https://evil.example"}).status_code == 403
+    for url in (f"https://nexastream-tv.onrender.com/stalker/{token}/c/index.html?leak=yes",
+                f"https://nexastream-tv.onrender.com/watch/{token}",
+                f"https://nexastream-tv.onrender.com@evil.example/stalker/{token}/c/index.html"):
+        assert client.post("/api/customers/portal-check", json={**payload, "portal_url": url}, headers=headers).status_code == 422
+    assert not calls
+    assert client.post("/api/customers/portal-check", json={
+        **payload, "portal_url": f"https://evil.example/stalker/{token}/c/index.html",
+    }, headers=headers).status_code == 422
+    assert len(calls) == 1
+    result = client.post("/api/customers/portal-check", json=payload, headers=headers)
+    assert result.status_code == 200 and result.json()["mac_matches"] is True
+    assert "portal_origin" not in result.json()
+    assert len(calls) == 2 and all(call.url.path == "/admin/subscribers/portal-check" for call in calls)
+    assert all(payload["portal_url"] not in call.content.decode() for call in calls)
+
+
+def test_portal_check_accepts_tv_service_custom_domain_without_exposing_token(dashboard, monkeypatch):
+    client, _ = dashboard
+    token = "a" * 43
+
+    def transport(request):
+        assert request.url.host == "nexastream-tv.onrender.com"
+        return httpx.Response(200, json={"id": 1, "name": "A", "mac_matches": True,
+                                         "is_active": True, "expires_at": "2099-01-01T00:00:00Z",
+                                         "portal_origin": "https://tv.custom.example"})
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: ORIGINAL_ASYNC_CLIENT(
+        transport=httpx.MockTransport(transport), **kwargs))
+    headers = sign_in(client)
+    result = client.post("/api/customers/portal-check", json={
+        "portal_url": f"https://tv.custom.example/stalker/{token}/c/index.html",
+        "mac_address": "00:1A:79:67:CB:47",
+    }, headers=headers)
+    assert result.status_code == 200 and "portal_origin" not in result.json()
+
+
 def test_customer_mac_activation_and_links_are_server_proxied(dashboard):
     client, calls = dashboard
     assert client.get("/health").json() == {"status": "ok"}
     assert client.get("/api/customers").status_code == 401
+    assert client.get("/api/customers/portal-settings").status_code == 401
     assert client.post("/api/customers", json={}).status_code == 401
     page = client.get("/")
     assert page.status_code == 200 and "New Customer" in page.text
@@ -72,6 +144,9 @@ def test_customer_mac_activation_and_links_are_server_proxied(dashboard):
     headers = sign_in(client)
     assert client.get("/api/session").json()["csrf_token"] == headers["X-CSRF-Token"]
     assert client.get("/api/customers").json()[0]["name"] == "A"
+    assert client.get("/api/customers/portal-settings").json() == {
+        "enabled": True, "server_url": "https://nexastream-tv.onrender.com",
+        "mag_portal_url": "https://nexastream-tv.onrender.com/c/index.html"}
     assert client.post("/api/customers", json={}, headers={"Origin": BASE}).status_code == 403
     assert client.post("/api/customers", json={}, headers={**headers, "Origin": "https://evil.example"}).status_code == 403
     assert client.post("/api/customers", json={}, headers={"X-CSRF-Token": headers["X-CSRF-Token"]}).status_code == 403
@@ -83,7 +158,7 @@ def test_customer_mac_activation_and_links_are_server_proxied(dashboard):
     assert client.post("/api/customers/1/rotate", headers=headers).json()["mag_portal_url"].endswith("/new-secret/c/index.html")
     assert client.patch("/api/customers/2", json={"mac_address": "invalid"}, headers=headers).json()["detail"] == "Invalid MAC address"
     assert client.patch("/api/customers/0", json={"is_active": True}, headers=headers).status_code == 404
-    assert [c.method for c in calls] == ["GET", "POST", "PATCH", "PATCH", "POST", "PATCH"]
+    assert [c.method for c in calls] == ["GET", "GET", "POST", "PATCH", "PATCH", "POST", "PATCH"]
     assert client.post("/api/logout", headers=headers).status_code == 200
     assert client.get("/api/customers").status_code == 401
 
@@ -111,6 +186,7 @@ def test_missing_secrets_fail_closed(monkeypatch):
 
 @pytest.mark.parametrize(("upstream", "message", "status"), [
     (lambda _: httpx.Response(401), "Match dashboard TV_ADMIN_API_KEY", 502),
+    (lambda _: httpx.Response(503, json={"detail": "Customer database unavailable"}), "TV customer database is unavailable", 502),
     (lambda _: httpx.Response(503), "PostgreSQL database status", 502),
     (lambda _: httpx.Response(302, headers={"Location": "https://other.example"}), "Check TV_API_URL", 502),
     (lambda request: (_ for _ in ()).throw(httpx.ConnectError("failed", request=request)), "Cannot reach TV service", 502),

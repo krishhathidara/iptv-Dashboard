@@ -4,6 +4,11 @@
   let pendingAction = null;
   let actionOrigin = null;
   let customers = [];
+  let sharedPortal = null;
+  let listReady = false;
+  let creating = false;
+  let checkingPortal = false;
+  let portalCheckGeneration = 0;
   const $ = (id) => document.getElementById(id);
   const status = (message, error = false) => {
     $("adminStatus").textContent = message;
@@ -26,6 +31,10 @@
       if (response.status === 401) {
         csrf = "";
         $("adminContent").hidden = true;
+        portalCheckGeneration++;
+        $("existingPortalUrl").value = "";
+        $("existingServerLink").replaceChildren();
+        $("existingServerLink").hidden = true;
         status("Session expired. Refresh to reconnect locally, or sign in again.", true);
       }
       throw new Error(typeof error.detail === "string" ? error.detail : `HTTP ${response.status}`);
@@ -38,7 +47,16 @@
     const title = document.createElement("strong");
     title.textContent = `${message} Save all customer URLs now: they cannot be retrieved after this page is closed. Replacing them disables the old URLs.`;
     container.append(title);
-    for (const [label, copyLabel, url] of [["MAG external portal URL (set on the MAG box; requires the recorded MAC)", "MAG portal", magPortalUrl], ["TV browser URL (not a MAG portal)", "TV browser", portalUrl], ["M3U playlist URL (for M3U players)", "M3U", playlistUrl]]) {
+    const compatibility = document.createElement("p");
+    compatibility.textContent = "For Server + MAC and compatible MAG Portal URL modes, use the common addresses in One URL for every activated MAC above. These private links are for the browser/M3U and legacy private portal flows. Neither mode is guaranteed to work on every device.";
+    container.append(compatibility);
+    // The legacy private server and MAG page share the same customer token.
+    const suffix = "/c/index.html";
+    const serverUrl = magPortalUrl.endsWith(suffix) ? magPortalUrl.slice(0, -suffix.length) : null;
+    const links = [["STBEmu Pro Portal URL / MAG external portal URL (requires the matching device MAC; not a Server URL)", "MAG portal", magPortalUrl]];
+    if (serverUrl) links.push(["Private Stalker Server URL (Server + MAC apps; requires the matching MAC and updated TV service)", "private Stalker Server", serverUrl]);
+    links.push(["TV browser URL (not for STBEmu)", "TV browser", portalUrl], ["M3U playlist URL (not for STBEmu)", "M3U", playlistUrl]);
+    for (const [label, copyLabel, url] of links) {
       const heading = document.createElement("p");
       heading.textContent = label;
       const link = document.createElement("a");
@@ -58,6 +76,33 @@
     container.hidden = false;
     container.querySelector("button")?.focus();
     container.scrollIntoView({ block: "nearest" });
+  }
+  function renderSharedPortal() {
+    const container = $("sharedPortalLinks");
+    container.replaceChildren();
+    container.hidden = true;
+    if (!sharedPortal?.enabled || !/^https:\/\/[^/?#]+$/.test(sharedPortal.server_url) ||
+        sharedPortal.mag_portal_url !== `${sharedPortal.server_url}/c/index.html`) {
+      $("sharedPortalStatus").textContent = "Shared MAC portal not enabled on the TV service. Deploy the updated TV service with ENABLE_MAC_STALKER_PORTAL=true before using these addresses.";
+      return;
+    }
+    $("sharedPortalStatus").textContent = "Use the mode your app actually supports. These addresses are the same for every registered MAC:";
+    for (const [label, url] of [["Stalker Server + MAC address", sharedPortal.server_url], ["MAG / STBEmu external Portal URL", sharedPortal.mag_portal_url]]) {
+      const heading = document.createElement("p");
+      heading.textContent = label;
+      const address = document.createElement("p");
+      address.textContent = url;
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "secondary-button";
+      copy.textContent = `Copy ${label}`;
+      copy.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(url); status(`${label} copied`); }
+        catch { status("Copy failed; select and copy the address above", true); }
+      });
+      container.append(heading, address, copy);
+    }
+    container.hidden = false;
   }
   function closeAction(restoreFocus = true) {
     const origin = actionOrigin;
@@ -93,6 +138,8 @@
     $("subscriberAction").scrollIntoView({ block: "nearest" });
   }
   async function load() {
+    listReady = false;
+    $("createCustomerButton").disabled = true;
     try {
       customers = await request("/admin/subscribers");
     } catch (error) {
@@ -102,6 +149,20 @@
     }
     $("customerLoadStatus").hidden = true;
     $("customerLoadStatus").textContent = "";
+    try {
+      sharedPortal = await request("/admin/subscribers/portal-settings");
+      renderSharedPortal();
+    } catch (error) {
+      sharedPortal = null;
+      $("sharedPortalLinks").replaceChildren();
+      $("sharedPortalLinks").hidden = true;
+      $("sharedPortalStatus").textContent = `Cannot confirm the shared portal address: ${error.message}`;
+    }
+    $("existingPortalStatus").textContent = "";
+    $("existingServerLink").replaceChildren();
+    $("existingServerLink").hidden = true;
+    listReady = true;
+    if (!creating) $("createCustomerButton").disabled = false;
     $("customerCount").textContent = String(customers.length);
     $("activeCount").textContent = String(customers.filter((row) => row.is_active && Date.parse(row.expires_at) > Date.now()).length);
     $("todayDate").textContent = new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date());
@@ -119,7 +180,7 @@
     }
     catch (error) {
       status(csrf ? "Dashboard open, but the TV customer service is unavailable. See My Customers for details." : "Session expired. Refresh to reconnect locally or sign in again.", true);
-      if (csrf) createStatus(`${error.message} Customer creation will not work until the TV service connection is fixed.`, true);
+      if (csrf) createStatus(`${error.message} Customer creation is disabled until My Customers loads successfully. Use Refresh after fixing the TV service.`, true);
     }
   }
   function renderCustomers() {
@@ -163,7 +224,79 @@
   }));
   $("lockButton").addEventListener("click", async () => {
     if (csrf) await fetch("/api/logout", { method: "POST", credentials: "same-origin", headers: { "X-CSRF-Token": csrf } }).catch(() => {});
-    csrf = ""; customers = []; closeAction(false); $("adminContent").hidden = true; $("subscriberList").replaceChildren(); $("newLink").replaceChildren(); $("newLink").hidden = true; createStatus("Enter name, device MAC and duration, then select Create customer and URLs."); status("Signed out"); $("adminKey").focus();
+    portalCheckGeneration++; csrf = ""; customers = []; listReady = false; $("createCustomerButton").disabled = true; closeAction(false); $("adminContent").hidden = true; $("subscriberList").replaceChildren(); $("newLink").replaceChildren(); $("newLink").hidden = true; $("existingAccountMac").value = ""; $("existingPortalUrl").value = ""; $("existingServerLink").replaceChildren(); $("existingServerLink").hidden = true; $("existingPortalStatus").textContent = ""; createStatus("Enter name, device MAC and duration, then select Create customer and URLs."); status("Signed out"); $("adminKey").focus();
+  });
+  $("existingPortalForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (checkingPortal) { $("existingPortalStatus").textContent = "A private URL check is already in progress. Wait for its result."; return; }
+    const generation = ++portalCheckGeneration;
+    const result = $("existingServerLink");
+    result.replaceChildren();
+    result.hidden = true;
+    const enteredMac = $("existingAccountMac").value.trim().toUpperCase().replaceAll("-", ":");
+    if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(enteredMac)) {
+      $("existingPortalStatus").textContent = "Enter the MAC saved for this customer (six hexadecimal pairs); check the MAC actually reported by your TV app.";
+      return;
+    }
+    let accountStatus;
+    if (!listReady) {
+      accountStatus = "The customer list is unavailable, so account status and saved MAC cannot be checked. Use Refresh before troubleshooting authentication.";
+    } else {
+      const matches = customers.filter((row) => row.mac_address === enteredMac);
+      if (!matches.length) accountStatus = `No customer has saved MAC ${enteredMac}. Check My Customers and the MAC reported by your TV app; do not create another account.`;
+      else if (matches.length > 1) accountStatus = `More than one customer has MAC ${enteredMac}. The shared portal denies this MAC until duplicates are resolved. Suspend or clear the MAC on obsolete accounts after reviewing them; do not rotate URLs.`;
+      else if (!matches[0].is_active) accountStatus = `Customer with MAC ${enteredMac} is inactive. Activate this existing account in My Customers before testing.`;
+      else if (!(Date.parse(matches[0].expires_at) > Date.now())) accountStatus = `Customer with MAC ${enteredMac} is expired (or has an invalid expiry). Extend this existing account in My Customers before testing.`;
+      else accountStatus = `One active, unexpired customer has saved MAC ${enteredMac}. Use the shared address above in the correct device mode; this does not prove your device actually reports that MAC.`;
+    }
+    const savedUrl = $("existingPortalUrl").value.trim();
+    if (!savedUrl) {
+      $("existingPortalStatus").textContent = `${accountStatus} An original private MAG URL is only needed to check an older private link, not for the shared portal.`;
+      return;
+    }
+    let parsed;
+    try { parsed = new URL(savedUrl); }
+    catch { $("existingPortalStatus").textContent = `${accountStatus} Enter the complete private MAG URL saved when this account was created.`; return; }
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash ||
+        !/^\/stalker\/[A-Za-z0-9_-]{32,128}\/c\/index\.html$/.test(parsed.pathname)) {
+      $("existingPortalStatus").textContent = `${accountStatus} Use the original HTTPS MAG URL ending in /c/index.html; no query, fragment, or credentials. Do not use a TV browser or M3U URL.`;
+      return;
+    }
+    const serverUrl = parsed.origin + parsed.pathname.slice(0, -"/c/index.html".length);
+    checkingPortal = true;
+    $("existingPortalStatus").textContent = "Checking which existing account owns this private URL…";
+    let verified;
+    try {
+      verified = await request("/api/customers/portal-check", { method: "POST", body: JSON.stringify({ portal_url: savedUrl, mac_address: enteredMac }) });
+    } catch (error) {
+      if (generation === portalCheckGeneration && csrf) $("existingPortalStatus").textContent = `${accountStatus} Private URL verification failed: ${error.message}. No account was changed.`;
+      return;
+    } finally { checkingPortal = false; }
+    if (generation !== portalCheckGeneration || !csrf || $("existingPortalUrl").value.trim() !== savedUrl ||
+        $("existingAccountMac").value.trim().toUpperCase().replaceAll("-", ":") !== enteredMac) return;
+    if (!verified.mac_matches) {
+      $("existingPortalStatus").textContent = `The private URL belongs to ${verified.name}, but its saved MAC does not match ${enteredMac}. Check the app-reported MAC and this existing account; no account was changed.`;
+      return;
+    }
+    if (!verified.is_active || !(Date.parse(verified.expires_at) > Date.now())) {
+      $("existingPortalStatus").textContent = `The private URL belongs to ${verified.name} and the MAC matches, but that account is ${verified.is_active ? "expired" : "inactive"}. Correct this existing account in My Customers before testing.`;
+      return;
+    }
+    const description = document.createElement("p");
+    description.textContent = "Verified private URL, active account and saved MAC. Private Server address (never share it):";
+    const address = document.createElement("p");
+    address.textContent = serverUrl;
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "secondary-button";
+    copy.textContent = "Copy private Server address";
+    copy.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(serverUrl); $("existingPortalStatus").textContent = "Private Server address copied."; }
+      catch { $("existingPortalStatus").textContent = "Copy failed. Select and copy the address above."; }
+    });
+    result.append(description, address, copy);
+    result.hidden = false;
+    $("existingPortalStatus").textContent = `Verified: this private URL belongs to ${verified.name}, is active and unexpired, and its saved MAC matches ${enteredMac}. The app-reported MAC, login protocol and playback still require device testing.`;
   });
   $("adminKey").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); $("unlockButton").click(); } });
   $("subscriberMonths").addEventListener("change", () => {
@@ -175,6 +308,7 @@
   $("subscriberForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = $("createCustomerButton");
+    if (!listReady) { createStatus("My Customers must load before creating another account. Fix the TV service and use Refresh; a previous attempt may already have saved.", true); return; }
     if (button.disabled) return;
     const name = $("subscriberName").value.trim();
     const mac = $("subscriberMac").value.trim();
@@ -184,6 +318,7 @@
     }
     const months = Number($("subscriberMonths").value === "custom" ? $("subscriberCustomMonths").value : $("subscriberMonths").value);
     if (!Number.isInteger(months) || months < 1 || months > 120) { createStatus("Enter 1 to 120 months.", true); return; }
+    creating = true;
     button.disabled = true;
     button.textContent = "Creating customer…";
     createStatus(`Saving ${name} to the TV service… Do not submit again while waiting.`);
@@ -198,14 +333,14 @@
       $("subscriberCustomLabel").hidden = true;
       $("subscriberCustomMonths").disabled = true;
       $("subscriberActive").checked = true;
-      const confirmation = `Account created for ${result.name || name} (MAC ${result.mac_address || mac}, ${months} ${months === 1 ? "month" : "months"}). ${result.is_active ? "Active now: set the MAG external portal URL below on the matching device." : "Inactive: select Activate in My Customers before the portal will work."}`;
+      const confirmation = `Account created for ${result.name || name} (MAC ${result.mac_address || mac}, ${months} ${months === 1 ? "month" : "months"}). ${result.is_active ? "Active now: use the shared address above in your app’s matching mode after deploying the TV service." : "Inactive: select Activate in My Customers before the portal will work."}`;
       createStatus(`${confirmation} Save the URLs below now.`, false);
       showLink(result.playlist_url, result.portal_url, result.mag_portal_url, confirmation);
       try { await load(); }
       catch (error) { createStatus(`Account created for ${result.name || name}. Save the URLs below now. Customer list could not refresh: ${error.message}`, true); }
     } catch (error) {
       createStatus(`Customer was not confirmed: ${error.message} ${/timed out|did not return customer URLs/i.test(error.message) ? "Check My Customers before retrying; the request may have succeeded." : ""}`, true);
-    } finally { button.disabled = false; button.textContent = "Create customer and URLs"; }
+    } finally { creating = false; button.disabled = !listReady; button.textContent = "Create customer and URLs"; }
   });
   $("refreshSubscribers").addEventListener("click", () => { closeAction(false); load().catch((error) => status(error.message, true)); });
   $("subscriberSearch").addEventListener("input", () => { closeAction(false); renderCustomers(); });

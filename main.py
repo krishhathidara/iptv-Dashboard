@@ -178,6 +178,14 @@ async def tv_request(method: str, path: str, body: dict | None = None):
         raise HTTPException(502, "TV service redirected the request. Check TV_API_URL (use the TV service's HTTPS origin).")
     if response.status_code == 401:
         raise HTTPException(502, "TV service rejected the admin key. Match dashboard TV_ADMIN_API_KEY to TV service ADMIN_API_KEY in Render; do not enter either key in the sign-in form.")
+    if response.status_code == 503:
+        try:
+            database_unavailable = response.json().get("detail") == "Customer database unavailable"
+        except (ValueError, AttributeError):
+            database_unavailable = False
+        if database_unavailable:
+            logger.warning("TV customer database unavailable on %s %s", method, path)
+            raise HTTPException(502, "TV customer database is unavailable. Check the TV service's Render PostgreSQL status and database logs before retrying.")
     if response.status_code >= 500:
         logger.warning("TV API returned HTTP %s on %s %s", response.status_code, method, path)
         raise HTTPException(502, "TV service returned a server error. Check its Render logs and PostgreSQL database status; then retry.")
@@ -216,6 +224,45 @@ async def json_body(request: Request) -> dict:
 async def customers(request: Request):
     authorize(request)
     result, _ = await tv_request("GET", "/admin/subscribers")
+    return JSONResponse(result)
+
+
+@app.get("/api/customers/portal-settings")
+async def customer_portal_settings(request: Request):
+    """Operator-only shared portal configuration from the TV service."""
+    authorize(request)
+    try:
+        result, _ = await tv_request("GET", "/admin/subscribers/portal-settings")
+    except HTTPException as exc:
+        if exc.status_code == 404 or (exc.status_code == 502 and exc.detail == "Invalid response from TV service"):
+            raise HTTPException(502, "The TV service does not have the shared MAC portal endpoint. Deploy the updated TV service with ENABLE_MAC_STALKER_PORTAL=true, then verify /c/index.html and /portal.php before using Strimix.") from None
+        raise
+    return JSONResponse(result)
+
+
+@app.post("/api/customers/portal-check")
+async def check_customer_portal(request: Request):
+    """Check an existing private URL against its account without changing the account."""
+    authorize(request)
+    data = await json_body(request)
+    url = data.get("portal_url")
+    mac = data.get("mac_address")
+    if not isinstance(url, str) or not isinstance(mac, str) or not re.fullmatch(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}", mac):
+        raise HTTPException(422, "A private MAG URL and six-pair MAC are required")
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        raise HTTPException(422, "Use a valid private MAG URL") from None
+    match = re.fullmatch(r"/stalker/([A-Za-z0-9_-]{32,128})/c/index\.html", parsed.path)
+    if (parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password
+            or parsed.query or parsed.fragment or not match or url != f"{parsed.scheme}://{parsed.netloc}{parsed.path}"):
+        raise HTTPException(422, "Use the original private MAG URL without query or credentials")
+    result, _ = await tv_request("POST", "/admin/subscribers/portal-check",
+                                 {"token": match.group(1), "mac_address": mac.upper()})
+    origin = result.get("portal_origin") if isinstance(result, dict) else None
+    if (not isinstance(origin, str) or url != f"{origin}/stalker/{match.group(1)}/c/index.html"):
+        raise HTTPException(422, "This URL is not the TV service's current MAG portal address. Check its host and saved link.")
+    result.pop("portal_origin", None)
     return JSONResponse(result)
 
 

@@ -19,7 +19,7 @@
   </nav>
   <main class="admin-shell">
     <header class="admin-header" id="overview"><div><span class="section-kicker">NexaStream · operator console</span><h1>Dashboard</h1><p>Manage customer activation, MAG portals and TV playlist links.</p></div></header>
-    <section class="admin-warning">Record the MAG device’s MAC and select a duration. Accounts are activated immediately by default; uncheck Activate immediately to create an inactive account instead. <strong>Enter the unique MAG external portal URL shown after creation on that customer’s MAG box—not the TV homepage or the dashboard URL.</strong> Save the URL: it cannot be retrieved after you close this page; use Replace URLs to issue a new one. A MAC can be spoofed, and suspending an account cannot revoke already copied upstream video links. Streams must be licensed for distribution.</section>
+    <section class="admin-warning">For STBEmu Pro on Fire TV, record the MAC shown under that profile’s STB configuration, not the Fire TV’s hardware MAC. Accounts are activated immediately by default; uncheck Activate immediately to create an inactive account instead. <strong>Use the shared MAG Portal URL for a compatible external-portal browser, or the shared Server address for Stalker Server + MAC mode.</strong> These modes have not been verified on your device. Do not create another account if My Customers cannot load; a previous create may already have saved. Private browser/M3U links remain separate. A MAC can be spoofed, and suspending an account cannot revoke already copied upstream video links. Streams must be licensed for distribution.</section>
     <section class="admin-card" id="signInCard">
       <h2>Unlock administration</h2>
       <p>Enter your dashboard operator password. The TV service admin key is held by the dashboard server; never enter that key here. Sign out when finished.</p>
@@ -27,6 +27,7 @@
       <p id="adminStatus" role="status">Locked</p>
     </section>
     <div id="adminContent" hidden>
+      <section class="admin-card" id="sharedPortal"><h2>One URL for every activated MAC</h2><p id="sharedPortalStatus" role="status">Loading the TV service’s shared portal settings…</p><div id="sharedPortalLinks" class="admin-link" hidden></div><p>A reported MAC is not a secure password. One active, unexpired customer per MAC is required; duplicate MACs are denied. A shared URL does not guarantee that a particular device’s Stalker implementation or stream codecs will work.</p></section>
       <section class="admin-stats" aria-label="Customer overview">
         <div class="admin-stat"><span class="stat-icon" aria-hidden="true">♟</span><div><small>Total customers</small><strong id="customerCount">0</strong></div></div>
         <div class="admin-stat"><span class="stat-icon stat-active" aria-hidden="true">✓</span><div><small>Active customers</small><strong id="activeCount">0</strong></div></div>
@@ -37,7 +38,7 @@
         <form id="subscriberForm">
           <div class="admin-fields">
             <label class="field-label">Name<input id="subscriberName" required maxlength="255" autocomplete="off"></label>
-            <label class="field-label">Device MAC (required for MAG portal)<input id="subscriberMac" required maxlength="17" pattern="([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}" title="Enter six hexadecimal pairs separated by colons or dashes, e.g. AA:BB:CC:DD:EE:FF" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off"></label>
+            <label class="field-label">MAG / STBEmu profile MAC (not the Fire TV hardware MAC)<input id="subscriberMac" required maxlength="17" pattern="(?:[0-9a-fA-F]{2}(?::|-)){5}[0-9a-fA-F]{2}" title="Enter the STBEmu profile's emulated MAC as six hexadecimal pairs separated by colons or dashes, e.g. AA:BB:CC:DD:EE:FF" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off"></label>
             <label class="field-label">Duration (calendar months)<select id="subscriberMonths"><option value="1">1 month</option><option value="3">3 months</option><option value="6">6 months</option><option value="12">12 months</option><option value="custom">Other duration</option></select></label>
             <label class="field-label" id="subscriberCustomLabel" hidden>Custom duration (1–120 months)<input id="subscriberCustomMonths" type="number" min="1" max="120" value="1" required disabled></label>
             <label class="field-label">Notes (optional)<input id="subscriberNotes" maxlength="500" autocomplete="off"></label>
@@ -50,6 +51,15 @@
       </section>
       <section class="admin-card" id="customers"><div class="admin-list-header"><h2>My Customers</h2><button id="refreshSubscribers" class="secondary-button" type="button">Refresh</button></div>
         <p id="customerLoadStatus" class="is-error" role="alert" hidden></p>
+        <form id="existingPortalForm" autocomplete="off">
+          <h3>Connect an existing customer (no new account)</h3>
+          <p>Check the app-reported MAC against My Customers. The shared addresses above require no private link. Optionally verify an older private MAG link against its account without changing it. Xtream username/password mode cannot use these credentials. Never enter the dashboard password or admin key on the TV.</p>
+          <label class="field-label">Saved customer MAC (use the MAC reported by the app)<input id="existingAccountMac" maxlength="17" autocomplete="off" placeholder="00:1A:79:67:CB:47"></label>
+          <label class="field-label">Saved private MAG external portal URL<input id="existingPortalUrl" type="url" autocomplete="off" spellcheck="false" placeholder="https://your-tv-service/stalker/…/c/index.html"></label>
+          <button class="secondary-button" type="submit">Verify existing account / show Server address</button>
+          <p id="existingPortalStatus" role="status" aria-live="polite"></p>
+          <div id="existingServerLink" class="admin-link" hidden></div>
+        </form>
         <label class="field-label admin-search">Find by name or MAC<input id="subscriberSearch" type="search" autocomplete="off" placeholder="Search customers or MAC addresses"></label>
         <form id="subscriberAction" class="admin-action" hidden aria-labelledby="actionTitle">
           <h3 id="actionTitle"></h3><p id="actionDescription"></p>
